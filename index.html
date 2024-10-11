@@ -1,0 +1,416 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Transformações Geométricas Interativas</title>
+  <script async src="https://docs.opencv.org/4.x/opencv.js" type="text/javascript" onload="onReady();"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+  <div id="loading">
+    <h2>Carregando...</h2>
+  </div>
+
+  <h2>Transformações Geométricas Interativas</h2>
+
+  <div id="container">
+    <div id="actions">
+      <label id="label" for="input">Selecione uma imagem</label>
+      <input id="input" type="file" accept="image/*">
+    </div>
+    <div id="info"></div>
+    <div id="tools"></div>
+  </div>
+
+  <canvas id="canvas" height="500" width="500"></canvas>
+
+  <script>
+    let original = null
+    let history = []
+    let historyIndex = 0
+
+    function onReady() {
+      document.getElementById('loading').remove()
+      createGUI()
+    }
+
+    const input = document.getElementById('input')
+    input.onchange = (event) => {
+      const file = event.target.files[0]
+      if (!file) return alert('Nenhum arquivo selecionado')
+
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        const image = new Image()
+        image.onload = () => {
+          original = cv.imread(image)
+          history = []
+          reset()
+        }
+        image.src = e.target.result
+      }
+      reader.readAsDataURL(file)
+    }
+
+    function requestNumber({
+      message,
+      positive = false,
+      integer = false,
+      nonZero = false
+    }) {
+      let tryAgain = ''
+      while (true) {
+
+        const input = prompt([message, tryAgain].filter(Boolean).join('\n'))
+        if (input === null)
+          return null
+
+        const number = parseFloat(input)
+        if (isNaN(number)) {
+          tryAgain = 'Por favor, insira um número válido.'
+          continue
+        }
+
+        if (nonZero && number === 0) {
+          tryAgain = 'O valor não pode ser zero.'
+          continue
+        }
+
+        if (integer && !Number.isInteger(number)) {
+          tryAgain = 'O valor deve ser um número inteiro.'
+          continue
+        }
+
+        if (positive && number < 0) {
+          tryAgain = 'O valor deve ser positivo.'
+          continue
+        }
+
+        return number
+      }
+    }
+
+    function createGUI() {
+      const tools = document.getElementById('tools')
+
+      function buttonFabric({ id, text, onClick }) {
+        const button = document.createElement('button')
+        button.id = id
+        button.innerText = text
+        button.onclick = onClick
+        return button
+      }
+
+      tools.appendChild(buttonFabric({
+        id: 'Inserir Pontos',
+        text: 'Inserir Pontos',
+        onClick: () => {
+          const points = []
+          const numPoints = requestNumber({ message: "Quantos pontos você deseja inserir?", positive: true, integer: true, nonZero: true })
+          if (numPoints === null || numPoints < 1)
+            return
+
+          for (let i = 0; i < numPoints; i++) {
+            const x = requestNumber({ message: `Digite a coordenada X do ponto ${i + 1}:` })
+            if (x === null)
+              return
+
+            const y = requestNumber({ message: `Digite a coordenada Y do ponto ${i + 1}:` })
+            if (y === null)
+              return
+
+            points.push(new cv.Point(x, y))
+          }
+
+          addToHistory({ transform: 'points', args: { points } })
+        }
+      }))
+
+      tools.appendChild(buttonFabric({
+        id: 'Translação',
+        text: 'Translação',
+        onClick: () => {
+          const tx = requestNumber({ message: "Digite o valor de translação em X:" })
+          if (tx === null)
+            return
+
+          const ty = requestNumber({ message: "Digite o valor de translação em Y:" })
+          if (ty === null)
+            return
+
+          addToHistory({ transform: 'translate', args: { tx, ty } })
+        }
+      }))
+
+      tools.appendChild(buttonFabric({
+        id: 'Rotação',
+        text: 'Rotação',
+        onClick: () => {
+          const angle = requestNumber({ message: "Digite o ângulo de rotação em graus:" })
+          if (angle === null)
+            return
+
+          addToHistory({ transform: 'rotate', args: { angle } })
+        }
+      }))
+
+      tools.appendChild(buttonFabric({
+        id: 'Escalonamento',
+        text: 'Escalonamento',
+        onClick: () => {
+          const sx = requestNumber({ message: "Digite o fator de escala em X:", nonZero: true })
+          if (sx === null)
+            return
+
+          const sy = requestNumber({ message: "Digite o fator de escala em Y:", nonZero: true })
+          if (sy === null)
+            return
+
+          addToHistory({ transform: 'scale', args: { sx, sy } })
+        }
+      }))
+
+      tools.appendChild(buttonFabric({
+        id: 'Resetar',
+        text: 'Resetar',
+        onClick: () => {
+          reset()
+        }
+      }))
+
+      tools.appendChild(buttonFabric({
+        id: 'Desfazer',
+        text: 'Desfazer',
+        onClick: () => {
+          undo()
+        }
+      }))
+
+      tools.appendChild(buttonFabric({
+        id: 'Refazer',
+        text: 'Refazer',
+        onClick: () => {
+          redo()
+        }
+      }))
+
+      tools.appendChild(buttonFabric({
+        id: 'Salvar',
+        text: 'Salvar',
+        onClick: () => {
+          saveImage()
+        }
+      }))
+    }
+
+    function undo() {
+      if (historyIndex === 0)
+        return alert('Não há mais ações para desfazer')
+
+      historyIndex--
+      apllyTransform()
+    }
+
+    function redo() {
+      if (historyIndex === history.length)
+        return alert('Não há mais ações para refazer')
+
+      historyIndex++
+      apllyTransform()
+    }
+
+    function reset() {
+      historyIndex = 0
+      apllyTransform()
+    }
+
+    function saveImage() {
+      const canvas = document.getElementById('canvas')
+      if (!canvas) {
+        alert('Nenhuma imagem para salvar.')
+        return
+      }
+
+      const dataURL = canvas.toDataURL('image/png')
+      const link = document.createElement('a')
+      link.href = dataURL
+      link.download = 'imagem_transformada.png'
+      document.body.appendChild(link)
+      link.click()
+
+      document.body.removeChild(link)
+    }
+
+    function addToHistory({ transform, args }) {
+      // Remove historico futuro
+      if (historyIndex < history.length)
+        history = history.slice(0, historyIndex)
+
+      // Adiciona transformação ao histórico
+      history.push({ transform, args })
+      historyIndex++
+      apllyTransform()
+    }
+
+    function apllyTransform() {
+      if (!original)
+        return
+
+      let temp = original.clone()
+
+      // Run all history and apply transformations
+      for (let i = 0; i < historyIndex; i++) {
+        const { transform, args } = history[i]
+
+        if (transform === 'translate')
+          temp = translate(temp, args)
+        else if (transform === 'rotate')
+          temp = rotate(temp, args)
+        else if (transform === 'scale')
+          temp = scale(temp, args)
+        else if (transform === 'points')
+          temp = drawPoints(temp, args)
+      }
+
+      // Draw image
+      cv.imshow('canvas', temp)
+
+      // Update buttons state
+      updateButtons()
+
+      // Update info
+      updateInfo(temp)
+
+      // Liberar memória
+      temp.delete()
+    }
+
+    function updateButtons() {
+      const hasHistory = !!history.length
+      const hasImage = !!original
+      const isFirst = historyIndex === 0
+      const isLast = historyIndex === history.length
+
+      const buttons = [
+        { id: 'Inserir Pontos', condition: !hasImage },
+        { id: 'Translação', condition: !hasImage },
+        { id: 'Rotação', condition: !hasImage },
+        { id: 'Escalonamento', condition: !hasImage },
+        { id: 'Resetar', condition: !hasImage || isFirst },
+        { id: 'Desfazer', condition: !hasImage || isFirst },
+        { id: 'Refazer', condition: !hasImage || isLast },
+        { id: 'Salvar', condition: !hasImage || !hasHistory }
+      ]
+
+      buttons.forEach(({ id, condition }) => {
+        const button = document.getElementById(id)
+        if (button)
+          button.disabled = condition
+      })
+    }
+
+    function updateInfo(image) {
+      const info = document.getElementById('info')
+      info.innerHTML = ''
+
+      if (!image)
+        return
+
+      document.getElementById('label').innerText = 'Alterar imagem'
+
+      const fileInfo = document.createElement('p')
+      fileInfo.textContent = `Arquivo..: ${input.files[0].name}`
+      info.appendChild(fileInfo)
+
+      const historyInfo = document.createElement('p')
+      historyInfo.textContent = `Histórico: ${historyIndex} de ${history.length}`
+      info.appendChild(historyInfo)
+
+      const dimensionInfo = document.createElement('p')
+      dimensionInfo.textContent = `Dimensão.: ${image.cols} x ${image.rows}`
+      info.appendChild(dimensionInfo)
+    }
+
+    function translate(image, { tx, ty }) {
+      // Criar matriz de translação
+      const M = cv.matFromArray(2, 3, cv.CV_64FC1, [1, 0, tx, 0, 1, ty])
+      // Criar imagem de destino
+      const dst = new cv.Mat()
+      // Criar tamanho da imagem
+      const size = new cv.Size(image.cols, image.rows)
+
+      // Aplicar translação
+      cv.warpAffine(image, dst, M, size)
+
+      image.delete()
+      image = dst.clone()
+
+      // Liberar memória
+      M.delete()
+      dst.delete()
+
+      return image
+    }
+
+    function rotate(image, { angle }) {
+      // Calcular centro da imagem
+      const center = new cv.Point(image.cols / 2, image.rows / 2)
+      // Criar matriz de rotação
+      const M = cv.getRotationMatrix2D(center, angle, 1)
+      // Criar imagem de destino
+      const dst = new cv.Mat()
+      // Criar tamanho da imagem
+      const size = new cv.Size(image.cols, image.rows)
+
+      // Aplicar rotação
+      cv.warpAffine(image, dst, M, size)
+
+      image.delete()
+      image = dst.clone()
+
+      // Liberar memória
+      M.delete()
+      dst.delete()
+
+      return image
+    }
+
+    function scale(image, { sx, sy }) {
+      // Criar imagem de destino
+      const dst = new cv.Mat()
+      // Criar tamanho da imagem
+      const size = new cv.Size(image.cols * sx, image.rows * sy)
+
+      // Aplicar redimensionamento
+      cv.resize(image, dst, size, 0, 0, cv.INTER_LINEAR)
+
+      image.delete()
+      image = dst.clone()
+
+      // Liberar memória
+      dst.delete()
+
+      return image
+    }
+
+    function drawPoints(image, { points }) {
+      // Criar cor
+      const color = new cv.Scalar(0, 0, 255, 255)
+
+      points.forEach(point => {
+        // Desenhar ponto
+        cv.circle(image, point, 5, color, cv.FILLED)
+      })
+
+      // Liberar memória
+      // ...
+
+      return image
+    }
+  </script>
+</body>
+
+</html>
